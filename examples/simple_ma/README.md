@@ -54,8 +54,14 @@ python examples/simple_ma/run.py \
   --trade-unit 0 \
   --open-cost 0.001 \
   --close-cost 0.001 \
-  --min-cost 0
+  --min-cost 0 \
+  --figure examples/simple_ma/bitcoin_returns.png
 ```
+
+The figure plots the growth of $1 in the moving-average strategy after trading
+fees against a buy-and-hold baseline using BTCUSD's daily benchmark returns:
+
+![Bitcoin moving-average strategy versus buy and hold](bitcoin_returns.png)
 
 The raw `volume` field is BTC traded on Coinbase. The dataset is suitable for
 testing and education; results from one venue do not represent the entire

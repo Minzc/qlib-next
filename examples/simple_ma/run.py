@@ -1,7 +1,9 @@
 """Run the minimal moving-average crossover backtest."""
 
 import argparse
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import qlib
 from qlib.backtest import backtest
 from qlib.contrib.evaluate import risk_analysis
@@ -25,12 +27,37 @@ def parse_args():
     parser.add_argument("--close-cost", type=float, default=0.0015)
     parser.add_argument("--min-cost", type=float, default=5)
     parser.add_argument(
+        "--figure",
+        type=Path,
+        help="Save a cumulative-return chart (strategy vs. buy-and-hold)",
+    )
+    parser.add_argument(
         "--trade-unit",
         type=float,
         default=100,
         help="Minimum quantity; use 0 for fractional trading",
     )
     return parser.parse_args()
+
+
+def save_return_figure(report, output_path, instrument):
+    """Plot growth of $1 for the strategy and the buy-and-hold benchmark."""
+    strategy_growth = (1 + report["return"] - report["cost"]).cumprod()
+    buy_hold_growth = (1 + report["bench"]).cumprod()
+    strategy_growth /= strategy_growth.iloc[0]
+    buy_hold_growth /= buy_hold_growth.iloc[0]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    ax.plot(strategy_growth.index, strategy_growth, label="MA strategy (after fees)", linewidth=2)
+    ax.plot(buy_hold_growth.index, buy_hold_growth, label=f"{instrument} buy and hold", linewidth=2)
+    ax.set(title="Growth of $1", xlabel="Date", ylabel="Portfolio value")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    print(f"\nReturn figure saved to {output_path}")
 
 
 def main():
@@ -71,6 +98,8 @@ def main():
     print(report.tail())
     print("\nStrategy risk metrics (after costs):")
     print(risk_analysis(net_return, freq="day"))
+    if args.figure:
+        save_return_figure(report, args.figure, args.instrument)
 
 
 if __name__ == "__main__":
