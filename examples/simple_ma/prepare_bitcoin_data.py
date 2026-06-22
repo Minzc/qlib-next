@@ -1,4 +1,4 @@
-"""Download Coinbase BTC-USD daily candles and convert them to Qlib data."""
+"""Download Coinbase daily crypto candles and convert them to Qlib data."""
 
 import argparse
 import sys
@@ -11,7 +11,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.dump_bin import DumpDataAll
 
-COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/{product}/candles"
 SECONDS_PER_DAY = 86_400
 MAX_DAYS_PER_REQUEST = 290  # Coinbase's documented maximum is 300 candles.
 
@@ -23,10 +23,16 @@ def parse_args():
         "--end", default=pd.Timestamp.now(tz="UTC").normalize().date().isoformat()
     )
     parser.add_argument("--output-dir", default=".data/bitcoin")
+    parser.add_argument(
+        "--products",
+        nargs="+",
+        default=["BTC-USD"],
+        help="Coinbase products to include (for example BTC-USD ETH-USD)",
+    )
     return parser.parse_args()
 
 
-def fetch_candles(start, end):
+def fetch_candles(start, end, product):
     """Fetch [start, end) daily candles in bounded, retryable requests."""
 
     session = requests.Session()
@@ -41,7 +47,9 @@ def fetch_candles(start, end):
             "end": chunk_end.isoformat().replace("+00:00", "Z"),
         }
         for attempt in range(5):
-            response = session.get(COINBASE_CANDLES_URL, params=params, timeout=30)
+            response = session.get(
+                COINBASE_CANDLES_URL.format(product=product), params=params, timeout=30
+            )
             if response.status_code == 200:
                 break
             if response.status_code == 429 or response.status_code >= 500:
@@ -53,7 +61,7 @@ def fetch_candles(start, end):
 
         # Coinbase rows are: time, low, high, open, close, volume.
         chunks.extend(response.json())
-        print(f"downloaded through {chunk_end.date()}")
+        print(f"{product}: downloaded through {chunk_end.date()}")
         cursor = chunk_end
         time.sleep(0.15)
 
@@ -68,7 +76,7 @@ def fetch_candles(start, end):
         & (frame["date"] < end.tz_localize(None))
     ]
     frame = frame.drop_duplicates("date").sort_values("date").reset_index(drop=True)
-    frame["symbol"] = "BTCUSD"
+    frame["symbol"] = product.replace("-", "")
     frame["factor"] = 1.0
     frame["change"] = frame["close"].pct_change()
     return frame[
@@ -88,14 +96,19 @@ def main():
     qlib_dir = output_dir / "qlib"
     source_dir.mkdir(parents=True, exist_ok=True)
 
-    candles = fetch_candles(start, end)
     expected_days = (end - start).days
-    if len(candles) < expected_days * 0.99:
-        raise RuntimeError(
-            f"Only received {len(candles)} of {expected_days} expected daily candles"
+    product_frames = []
+    for product in args.products:
+        candles = fetch_candles(start, end, product)
+        if len(candles) < expected_days * 0.99:
+            raise RuntimeError(
+                f"{product}: only received {len(candles)} of {expected_days} expected daily candles"
+            )
+        candles["crypto_weight"] = 1.0 / len(args.products)
+        candles.to_csv(
+            source_dir / f"{product.replace('-', '').lower()}.csv", index=False
         )
-    csv_path = source_dir / "btcusd.csv"
-    candles.to_csv(csv_path, index=False)
+        product_frames.append(candles)
 
     DumpDataAll(
         data_path=str(source_dir),
@@ -107,15 +120,20 @@ def main():
 
     # Qlib uses the next calendar timestamp to close each execution interval.
     # Keep feature dates unchanged, but provide future 24/7 interval boundaries.
-    future_end = candles["date"].max() + pd.Timedelta(days=366)
-    future_calendar = pd.date_range(candles["date"].min(), future_end, freq="D")
+    first_date = min(frame["date"].min() for frame in product_frames)
+    last_date = max(frame["date"].max() for frame in product_frames)
+    future_end = last_date + pd.Timedelta(days=366)
+    future_calendar = pd.date_range(first_date, future_end, freq="D")
     future_path = qlib_dir / "calendars" / "day_future.txt"
     pd.Series(future_calendar.strftime("%Y-%m-%d")).to_csv(
         future_path, index=False, header=False
     )
 
-    print(f"\nWrote {len(candles)} BTC-USD candles to {qlib_dir}")
-    print(candles.tail())
+    total_rows = sum(len(frame) for frame in product_frames)
+    print(
+        f"\nWrote {total_rows} daily candles for {len(product_frames)} products to {qlib_dir}"
+    )
+    print(pd.concat(product_frames).groupby("symbol").tail(1))
 
 
 if __name__ == "__main__":

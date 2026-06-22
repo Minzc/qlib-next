@@ -49,8 +49,18 @@ def save_return_figure(report, output_path, instrument):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(10, 5.5))
-    ax.plot(strategy_growth.index, strategy_growth, label="MA strategy (after fees)", linewidth=2)
-    ax.plot(buy_hold_growth.index, buy_hold_growth, label=f"{instrument} buy and hold", linewidth=2)
+    ax.plot(
+        strategy_growth.index,
+        strategy_growth,
+        label="MA strategy (after fees)",
+        linewidth=2,
+    )
+    ax.plot(
+        buy_hold_growth.index,
+        buy_hold_growth,
+        label=f"{instrument} buy and hold",
+        linewidth=2,
+    )
     ax.set(title="Growth of $1", xlabel="Date", ylabel="Portfolio value")
     ax.grid(alpha=0.25)
     ax.legend()
