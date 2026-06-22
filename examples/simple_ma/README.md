@@ -48,7 +48,7 @@ python examples/simple_ma/run.py \
   --instrument BTCUSD \
   --benchmark BTCUSD \
   --region us \
-  --start 2018-01-01 \
+  --start 2019-01-01 \
   --end 2025-12-31 \
   --deal-price open \
   --trade-unit 0 \
@@ -59,7 +59,9 @@ python examples/simple_ma/run.py \
 ```
 
 The figure plots the growth of $1 in the moving-average strategy after trading
-fees against a buy-and-hold baseline using BTCUSD's daily benchmark returns:
+fees against a buy-and-hold baseline using BTCUSD's daily benchmark returns.
+Both series use the same 2,557 daily sessions from 2019-01-01 through
+2025-12-31, matching the portfolio baseline suite below:
 
 ![Bitcoin moving-average strategy versus buy and hold](bitcoin_returns.png)
 
