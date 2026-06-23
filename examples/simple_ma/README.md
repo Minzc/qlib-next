@@ -127,6 +127,54 @@ sample, the simple rolling LightGBM model is a useful negative result: it runs
 through Qlib's backtest stack without look-ahead, but it does not beat either
 BTC buy-and-hold or the equal-weight crypto basket.
 
+### QQQ portfolio baselines
+
+The same daily portfolio experiment can also run on Yahoo Finance OHLCV data.
+The QQQ run uses actual Yahoo trading dates as the Qlib calendar so US market
+holidays are not treated as tradable sessions:
+
+```bash
+python examples/simple_ma/prepare_yahoo_data.py \
+  --start 2018-01-01 \
+  --end 2026-01-01 \
+  --output-dir .data/qqq \
+  --symbols QQQ
+python examples/simple_ma/run_strategy_baselines.py \
+  --provider-uri .data/qqq/qlib \
+  --start 2019-01-01 \
+  --end 2025-12-31 \
+  --data-start 2018-01-01 \
+  --instruments QQQ \
+  --benchmark QQQ \
+  --benchmark-name "QQQ buy and hold" \
+  --annualization-days 252 \
+  --title "Qlib QQQ strategy baselines" \
+  --riskmodel-root .data/qqq/riskmodel \
+  --output-dir examples/simple_ma/qqq_baseline_results \
+  --ml-cash-threshold
+```
+
+This single-asset run covers 1,760 QQQ trading sessions from 2019-01-02
+through 2025-12-31. `EnhancedIndexingStrategy` is skipped because Qlib's
+enhanced-indexing implementation requires a multi-asset universe. Results are
+after transaction fees; annualization uses 252 equity sessions:
+
+| Strategy | Growth of $1 | Annualized return | Sharpe | Max drawdown |
+| --- | ---: | ---: | ---: | ---: |
+| MA 5/20 (QQQ) | 3.19 | 18.08% | 1.23 | -20.06% |
+| TopkDropout | 0.33 | -14.62% | -0.87 | -70.54% |
+| SoftTopk | 3.73 | 20.74% | 0.95 | -33.99% |
+| LightGBM rotation | 2.87 | 16.27% | 0.80 | -33.96% |
+| QQQ buy-and-hold | 3.97 | 21.81% | 0.94 | -35.62% |
+
+![QQQ portfolio strategy return comparison](qqq_baseline_results/portfolio_returns.png)
+
+The QQQ results tell a slightly different story than BTC: buy-and-hold still
+has the highest terminal value, while the 5/20 moving-average rule has lower
+growth but materially lower drawdown and a higher Sharpe ratio over this
+sample. The LightGBM run is again a simple reproducible ML baseline rather than
+a tuned model.
+
 ### Execution baselines
 
 Download hourly BTC-USD OHLCV candles and run one 0.05 BTC buy order per day.

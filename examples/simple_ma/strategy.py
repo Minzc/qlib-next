@@ -104,10 +104,13 @@ class MovingAverageCrossStrategy(BaseStrategy):
 class SingleAssetSignalStrategy(BaseStrategy):
     """Hold the highest-scored asset with deterministic five-day turnover."""
 
-    def __init__(self, signal, min_holding_days=5, risk_degree=0.95, **kwargs):
+    def __init__(
+        self, signal, min_holding_days=5, risk_degree=0.95, min_score=None, **kwargs
+    ):
         self.signal = signal.sort_index()
         self.min_holding_days = min_holding_days
         self.risk_degree = risk_degree
+        self.min_score = min_score
         self.buy_step = None
         super().__init__(**kwargs)
 
@@ -126,13 +129,41 @@ class SingleAssetSignalStrategy(BaseStrategy):
         target = scores.rename("score").reset_index()
         target = target.sort_values(
             ["score", "instrument"], ascending=[False, True]
-        ).iloc[0]["instrument"]
+        ).iloc[0]
+        target_instrument = target["instrument"]
+        target_score = target["score"]
         position = self.trade_position
         held = sorted(position.get_stock_list())
+        if self.min_score is not None and target_score <= self.min_score:
+            if not held:
+                return TradeDecisionWO([], self)
+            current = held[0]
+            if (
+                self.buy_step is not None
+                and trade_step - self.buy_step < self.min_holding_days
+            ):
+                return TradeDecisionWO([], self)
+            if not self.trade_exchange.is_stock_tradable(
+                current, start_time, end_time, direction=Order.SELL
+            ):
+                return TradeDecisionWO([], self)
+            amount = position.get_stock_amount(current)
+            return TradeDecisionWO(
+                [
+                    Order(
+                        stock_id=current,
+                        amount=amount,
+                        direction=Order.SELL,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
+                ],
+                self,
+            )
 
         if held:
             current = held[0]
-            if current == target:
+            if current == target_instrument:
                 return TradeDecisionWO([], self)
             if (
                 self.buy_step is not None
@@ -158,14 +189,14 @@ class SingleAssetSignalStrategy(BaseStrategy):
             )
 
         if not self.trade_exchange.is_stock_tradable(
-            target, start_time, end_time, direction=Order.BUY
+            target_instrument, start_time, end_time, direction=Order.BUY
         ):
             return TradeDecisionWO([], self)
         price = self.trade_exchange.get_deal_price(
-            target, start_time, end_time, direction=Order.BUY
+            target_instrument, start_time, end_time, direction=Order.BUY
         )
         amount = position.get_cash() * self.risk_degree / price
-        factor = self.trade_exchange.get_factor(target, start_time, end_time)
+        factor = self.trade_exchange.get_factor(target_instrument, start_time, end_time)
         amount = self.trade_exchange.round_amount_by_trade_unit(amount, factor)
         if amount <= 0:
             return TradeDecisionWO([], self)
@@ -173,7 +204,7 @@ class SingleAssetSignalStrategy(BaseStrategy):
         return TradeDecisionWO(
             [
                 Order(
-                    stock_id=target,
+                    stock_id=target_instrument,
                     amount=amount,
                     direction=Order.BUY,
                     start_time=start_time,

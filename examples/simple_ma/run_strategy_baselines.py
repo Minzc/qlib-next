@@ -25,6 +25,16 @@ def parse_args():
     parser.add_argument("--provider-uri", default=".data/crypto_baselines/qlib")
     parser.add_argument("--start", default="2019-01-01")
     parser.add_argument("--end", default="2025-12-31")
+    parser.add_argument("--data-start", default="2018-01-01")
+    parser.add_argument(
+        "--instruments", nargs="+", default=["BTCUSD", "ETHUSD", "LTCUSD", "BCHUSD"]
+    )
+    parser.add_argument("--benchmark", default="BTCUSD")
+    parser.add_argument("--benchmark-name", default="BTC buy and hold")
+    parser.add_argument("--basket-name", default="Crypto basket buy and hold")
+    parser.add_argument("--annualization-days", type=int, default=365)
+    parser.add_argument("--title", default="Qlib portfolio strategy baselines")
+    parser.add_argument("--ml-cash-threshold", action="store_true")
     parser.add_argument(
         "--riskmodel-root", type=Path, default=Path(".data/crypto_baselines/riskmodel")
     )
@@ -34,14 +44,18 @@ def parse_args():
     return parser.parse_args()
 
 
-def prepare_risk_model(root, instruments, start, end, window=60):
+def prepare_risk_model(
+    root, instruments, start, end, data_start="2018-01-01", window=60
+):
     """Create the rolling statistical risk inputs required by EnhancedIndexingStrategy."""
     prices = (
-        D.features(instruments, ["$close"], start_time="2018-01-01", end_time=end)
+        D.features(instruments, ["$close"], start_time=data_start, end_time=end)
         .iloc[:, 0]
         .unstack(level="instrument")
     )
-    estimator = StructuredCovEstimator(num_factors=2, scale_return=False)
+    estimator = StructuredCovEstimator(
+        num_factors=min(2, len(instruments)), scale_return=False
+    )
     for index in range(window, len(prices)):
         date = prices.index[index]
         if date < pd.Timestamp(start) - pd.Timedelta(days=1):
@@ -62,7 +76,7 @@ def prepare_risk_model(root, instruments, start, end, window=60):
         ).to_pickle(date_root / "specific_risk.pkl")
 
 
-def run_one(strategy, instruments, start, end):
+def run_one(strategy, instruments, start, end, benchmark):
     executor = {
         "class": "SimulatorExecutor",
         "module_path": "qlib.backtest.executor",
@@ -73,7 +87,7 @@ def run_one(strategy, instruments, start, end):
         end_time=end,
         strategy=strategy,
         executor=executor,
-        benchmark="BTCUSD",
+        benchmark=benchmark,
         account=1_000_000,
         exchange_kwargs={
             "freq": "day",
@@ -95,16 +109,16 @@ def growth_from_report(report):
     return growth / growth.iloc[0]
 
 
-def summarize(name, growth, report):
+def summarize(name, growth, report, annualization_days):
     daily_return = report["return"] - report["cost"]
     drawdown = growth / growth.cummax() - 1
     volatility = daily_return.std()
     return {
         "strategy": name,
         "total_return": growth.iloc[-1] - 1,
-        "annualized_return": growth.iloc[-1] ** (365 / len(growth)) - 1,
-        "annualized_volatility": volatility * np.sqrt(365),
-        "sharpe_ratio": daily_return.mean() / volatility * np.sqrt(365),
+        "annualized_return": growth.iloc[-1] ** (annualization_days / len(growth)) - 1,
+        "annualized_volatility": volatility * np.sqrt(annualization_days),
+        "sharpe_ratio": daily_return.mean() / volatility * np.sqrt(annualization_days),
         "max_drawdown": drawdown.min(),
         "mean_daily_turnover": report.get(
             "turnover", pd.Series(0, index=report.index)
@@ -120,7 +134,7 @@ def main():
     # worker avoids process-start overhead dominating this four-asset example.
     qlib.init(provider_uri=args.provider_uri, region="us", kernels=1)
 
-    instruments = ["BTCUSD", "ETHUSD", "LTCUSD", "BCHUSD"]
+    instruments = args.instruments
     signal_start = pd.Timestamp(args.start) - pd.Timedelta(days=40)
     momentum = D.features(
         instruments,
@@ -133,36 +147,46 @@ def main():
         args.start,
         args.end,
         args.output_dir,
+        data_start=args.data_start,
     )
 
-    prepare_risk_model(args.riskmodel_root, instruments, args.start, args.end)
+    prepare_risk_model(
+        args.riskmodel_root, instruments, args.start, args.end, args.data_start
+    )
+    topk = min(2, len(instruments))
     strategies = {
-        "MA 5/20 (BTC)": MovingAverageCrossStrategy(
-            "BTCUSD", fast_window=5, slow_window=20
+        f"MA 5/20 ({args.benchmark})": MovingAverageCrossStrategy(
+            args.benchmark, fast_window=5, slow_window=20
         ),
-        "TopkDropout": TopkDropoutStrategy(signal=momentum, topk=2, n_drop=1),
-        "SoftTopk": SoftTopkStrategy(signal=momentum, topk=2, max_sold_weight=1.0),
+        "TopkDropout": TopkDropoutStrategy(
+            signal=momentum, topk=topk, n_drop=max(0, topk - 1)
+        ),
+        "SoftTopk": SoftTopkStrategy(signal=momentum, topk=topk, max_sold_weight=1.0),
         "LightGBM rotation": SingleAssetSignalStrategy(
             signal=ml_signal,
             min_holding_days=5,
+            min_score=0 if args.ml_cash_threshold else None,
         ),
-        "EnhancedIndexing": EnhancedIndexingStrategy(
+    }
+    if len(instruments) > 1:
+        strategies["EnhancedIndexing"] = EnhancedIndexingStrategy(
             signal=momentum,
             riskmodel_root=str(args.riskmodel_root),
             market="crypto",
             optimizer_kwargs={"lamb": 5, "delta": 0.5, "b_dev": 0.2},
-        ),
-    }
+        )
+    else:
+        print("\nSkipping EnhancedIndexing: it requires a multi-asset universe.")
 
     reports = {}
     growth = {}
     summary = []
     for name, strategy in strategies.items():
         print(f"\nRunning {name}...")
-        report = run_one(strategy, instruments, args.start, args.end)
+        report = run_one(strategy, instruments, args.start, args.end, args.benchmark)
         reports[name] = report
         growth[name] = growth_from_report(report)
-        summary.append(summarize(name, growth[name], report))
+        summary.append(summarize(name, growth[name], report, args.annualization_days))
 
     benchmark = (1 + next(iter(reports.values()))["bench"]).cumprod()
     benchmark /= benchmark.iloc[0]
@@ -170,7 +194,11 @@ def main():
     benchmark_report["return"] = benchmark_report["bench"]
     benchmark_report["cost"] = 0
     benchmark_report["turnover"] = 0
-    summary.append(summarize("BTC buy and hold", benchmark, benchmark_report))
+    summary.append(
+        summarize(
+            args.benchmark_name, benchmark, benchmark_report, args.annualization_days
+        )
+    )
 
     open_prices = (
         D.features(instruments, ["$open"], start_time=args.start, end_time=args.end)
@@ -183,9 +211,15 @@ def main():
     equal_weight_report = benchmark_report.copy()
     equal_weight_report["return"] = equal_weight.pct_change().fillna(0)
     equal_weight_report["turnover"] = 0
-    summary.append(
-        summarize("Crypto basket buy and hold", equal_weight, equal_weight_report)
-    )
+    if len(instruments) > 1:
+        summary.append(
+            summarize(
+                args.basket_name,
+                equal_weight,
+                equal_weight_report,
+                args.annualization_days,
+            )
+        )
 
     summary_frame = pd.DataFrame(summary).set_index("strategy")
     summary_frame.to_csv(args.output_dir / "portfolio_metrics.csv")
@@ -198,27 +232,22 @@ def main():
     ax.plot(
         benchmark.index,
         benchmark,
-        label="BTC buy and hold",
+        label=args.benchmark_name,
         linewidth=2.2,
         linestyle="--",
     )
-    ax.plot(
-        equal_weight.index,
-        equal_weight,
-        label="Crypto basket buy and hold",
-        linewidth=2.0,
-        linestyle=":",
-    )
-    pd.DataFrame(
-        {
-            **growth,
-            "BTC buy and hold": benchmark,
-            "Crypto basket buy and hold": equal_weight,
-        }
-    ).to_csv(args.output_dir / "portfolio_growth.csv")
-    ax.set(
-        title="Qlib portfolio strategy baselines", xlabel="Date", ylabel="Growth of $1"
-    )
+    growth_output = {**growth, args.benchmark_name: benchmark}
+    if len(instruments) > 1:
+        ax.plot(
+            equal_weight.index,
+            equal_weight,
+            label=args.basket_name,
+            linewidth=2.0,
+            linestyle=":",
+        )
+        growth_output[args.basket_name] = equal_weight
+    pd.DataFrame(growth_output).to_csv(args.output_dir / "portfolio_growth.csv")
+    ax.set(title=args.title, xlabel="Date", ylabel="Growth of $1")
     ax.grid(alpha=0.25)
     ax.legend()
     fig.tight_layout()
