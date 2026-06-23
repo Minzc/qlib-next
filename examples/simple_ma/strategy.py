@@ -99,3 +99,86 @@ class MovingAverageCrossStrategy(BaseStrategy):
             direction=direction,
         )
         return TradeDecisionWO([order], self)
+
+
+class SingleAssetSignalStrategy(BaseStrategy):
+    """Hold the highest-scored asset with deterministic five-day turnover."""
+
+    def __init__(self, signal, min_holding_days=5, risk_degree=0.95, **kwargs):
+        self.signal = signal.sort_index()
+        self.min_holding_days = min_holding_days
+        self.risk_degree = risk_degree
+        self.buy_step = None
+        super().__init__(**kwargs)
+
+    def generate_trade_decision(self, execute_result=None):
+        trade_step = self.trade_calendar.get_trade_step()
+        start_time, end_time = self.trade_calendar.get_step_time(trade_step)
+        signal_time, _ = self.trade_calendar.get_step_time(trade_step, shift=1)
+        try:
+            scores = self.signal.xs(signal_time, level="datetime").dropna()
+        except KeyError:
+            return TradeDecisionWO([], self)
+        if scores.empty:
+            return TradeDecisionWO([], self)
+
+        # Instrument name is an explicit stable tie-breaker.
+        target = scores.rename("score").reset_index()
+        target = target.sort_values(
+            ["score", "instrument"], ascending=[False, True]
+        ).iloc[0]["instrument"]
+        position = self.trade_position
+        held = sorted(position.get_stock_list())
+
+        if held:
+            current = held[0]
+            if current == target:
+                return TradeDecisionWO([], self)
+            if (
+                self.buy_step is not None
+                and trade_step - self.buy_step < self.min_holding_days
+            ):
+                return TradeDecisionWO([], self)
+            if not self.trade_exchange.is_stock_tradable(
+                current, start_time, end_time, direction=Order.SELL
+            ):
+                return TradeDecisionWO([], self)
+            amount = position.get_stock_amount(current)
+            return TradeDecisionWO(
+                [
+                    Order(
+                        stock_id=current,
+                        amount=amount,
+                        direction=Order.SELL,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
+                ],
+                self,
+            )
+
+        if not self.trade_exchange.is_stock_tradable(
+            target, start_time, end_time, direction=Order.BUY
+        ):
+            return TradeDecisionWO([], self)
+        price = self.trade_exchange.get_deal_price(
+            target, start_time, end_time, direction=Order.BUY
+        )
+        amount = position.get_cash() * self.risk_degree / price
+        factor = self.trade_exchange.get_factor(target, start_time, end_time)
+        amount = self.trade_exchange.round_amount_by_trade_unit(amount, factor)
+        if amount <= 0:
+            return TradeDecisionWO([], self)
+        self.buy_step = trade_step
+        return TradeDecisionWO(
+            [
+                Order(
+                    stock_id=target,
+                    amount=amount,
+                    direction=Order.BUY,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            ],
+            self,
+        )

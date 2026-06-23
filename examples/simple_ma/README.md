@@ -75,7 +75,8 @@ Qlib's strategies solve two different problems, so the baseline suite reports
 them separately:
 
 - portfolio strategies decide what to own: 5/20 MA, `TopkDropoutStrategy`,
-  `SoftTopkStrategy`, and `EnhancedIndexingStrategy`;
+  `SoftTopkStrategy`, `EnhancedIndexingStrategy`, and a rolling LightGBM
+  rotation model;
 - execution strategies decide how to fill an existing order: `TWAPStrategy`
   and `SBBStrategyEMA`.
 
@@ -93,9 +94,12 @@ python examples/simple_ma/prepare_bitcoin_data.py \
   --products BTC-USD ETH-USD LTC-USD BCH-USD
 ```
 
-Run all four portfolio strategies. They use a 20-day momentum score where a
-cross-sectional signal is required, trade at the next daily open, use a 0.1%
-fee in each direction, and compare against BTC buy-and-hold:
+Run the portfolio strategies. The rule-based cross-sectional strategies use a
+20-day momentum score. The LightGBM experiment retrains every 90 days, predicts
+five-day open-to-open returns from lagged OHLCV features, and holds the
+highest-scored asset for at least five days. All strategies trade at the next
+daily open, use a 0.1% fee in each direction, and compare against BTC and
+equal-weight crypto buy-and-hold baselines:
 
 ```bash
 python examples/simple_ma/run_strategy_baselines.py
@@ -103,21 +107,25 @@ python examples/simple_ma/run_strategy_baselines.py
 
 The test covers 2,557 daily sessions from 2019-01-01 through 2025-12-31. The
 runner builds a rolling 60-day, two-factor statistical risk model for
-`EnhancedIndexingStrategy`. Results are after transaction fees:
+`EnhancedIndexingStrategy`. Results are after transaction fees; annualization
+uses 365 crypto sessions:
 
-| Strategy | Growth of $1 | Annualized return | Max drawdown |
-| --- | ---: | ---: | ---: |
-| MA 5/20 (BTC) | 10.17 | 39.24% | -61.77% |
-| TopkDropout | 5.14 | 26.34% | -88.38% |
-| SoftTopk | 5.87 | 28.75% | -86.89% |
-| EnhancedIndexing | 8.64 | 36.05% | -85.46% |
-| BTC buy-and-hold | 22.87 | 56.32% | -76.67% |
+| Strategy | Growth of $1 | Annualized return | Sharpe | Max drawdown |
+| --- | ---: | ---: | ---: | ---: |
+| MA 5/20 (BTC) | 10.17 | 39.24% | 0.99 | -61.77% |
+| TopkDropout | 5.14 | 26.34% | 0.71 | -88.38% |
+| SoftTopk | 5.87 | 28.75% | 0.73 | -86.89% |
+| LightGBM rotation | 4.29 | 23.13% | 0.68 | -89.37% |
+| EnhancedIndexing | 8.64 | 36.05% | 0.79 | -85.46% |
+| BTC buy-and-hold | 22.87 | 56.32% | 1.04 | -76.67% |
+| Crypto basket buy-and-hold | 13.34 | 44.74% | 0.88 | -78.70% |
 
 ![Portfolio strategy return comparison](baseline_results/portfolio_returns.png)
 
-These are strategy-integration baselines, not tuned trading systems. In
-particular, comparing a four-asset portfolio with a single-asset BTC benchmark
-mixes allocation and market-selection effects.
+These are strategy-integration baselines, not tuned trading systems. In this
+sample, the simple rolling LightGBM model is a useful negative result: it runs
+through Qlib's backtest stack without look-ahead, but it does not beat either
+BTC buy-and-hold or the equal-weight crypto basket.
 
 ### Execution baselines
 
@@ -148,5 +156,7 @@ orders establishes execution superiority.
 ![Execution strategy comparison](baseline_results/execution_comparison.png)
 
 Machine-readable results are written to `baseline_results/portfolio_metrics.csv`,
+`baseline_results/portfolio_growth.csv`,
+`baseline_results/lightgbm_feature_importance.csv`,
 `baseline_results/execution_metrics.csv`, and
 `baseline_results/execution_summary.csv`.

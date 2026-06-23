@@ -16,7 +16,8 @@ from qlib.contrib.strategy import (
 from qlib.data import D
 from qlib.model.riskmodel import StructuredCovEstimator
 
-from strategy import MovingAverageCrossStrategy
+from ml_strategy import build_rolling_lightgbm_signal
+from strategy import MovingAverageCrossStrategy, SingleAssetSignalStrategy
 
 
 def parse_args():
@@ -97,12 +98,17 @@ def growth_from_report(report):
 def summarize(name, growth, report):
     daily_return = report["return"] - report["cost"]
     drawdown = growth / growth.cummax() - 1
+    volatility = daily_return.std()
     return {
         "strategy": name,
         "total_return": growth.iloc[-1] - 1,
         "annualized_return": growth.iloc[-1] ** (365 / len(growth)) - 1,
-        "annualized_volatility": daily_return.std() * np.sqrt(365),
+        "annualized_volatility": volatility * np.sqrt(365),
+        "sharpe_ratio": daily_return.mean() / volatility * np.sqrt(365),
         "max_drawdown": drawdown.min(),
+        "mean_daily_turnover": report.get(
+            "turnover", pd.Series(0, index=report.index)
+        ).mean(),
         "final_value_of_1": growth.iloc[-1],
     }
 
@@ -122,6 +128,12 @@ def main():
         start_time=signal_start,
         end_time=args.end,
     ).iloc[:, 0]
+    ml_signal = build_rolling_lightgbm_signal(
+        instruments,
+        args.start,
+        args.end,
+        args.output_dir,
+    )
 
     prepare_risk_model(args.riskmodel_root, instruments, args.start, args.end)
     strategies = {
@@ -130,6 +142,10 @@ def main():
         ),
         "TopkDropout": TopkDropoutStrategy(signal=momentum, topk=2, n_drop=1),
         "SoftTopk": SoftTopkStrategy(signal=momentum, topk=2, max_sold_weight=1.0),
+        "LightGBM rotation": SingleAssetSignalStrategy(
+            signal=ml_signal,
+            min_holding_days=5,
+        ),
         "EnhancedIndexing": EnhancedIndexingStrategy(
             signal=momentum,
             riskmodel_root=str(args.riskmodel_root),
@@ -153,7 +169,23 @@ def main():
     benchmark_report = next(iter(reports.values())).copy()
     benchmark_report["return"] = benchmark_report["bench"]
     benchmark_report["cost"] = 0
+    benchmark_report["turnover"] = 0
     summary.append(summarize("BTC buy and hold", benchmark, benchmark_report))
+
+    open_prices = (
+        D.features(instruments, ["$open"], start_time=args.start, end_time=args.end)
+        .iloc[:, 0]
+        .unstack(level="instrument")
+    )
+    equal_weight = (open_prices / open_prices.iloc[0]).mean(axis=1)
+    equal_weight = equal_weight.reindex(benchmark.index).ffill()
+    equal_weight /= equal_weight.iloc[0]
+    equal_weight_report = benchmark_report.copy()
+    equal_weight_report["return"] = equal_weight.pct_change().fillna(0)
+    equal_weight_report["turnover"] = 0
+    summary.append(
+        summarize("Crypto basket buy and hold", equal_weight, equal_weight_report)
+    )
 
     summary_frame = pd.DataFrame(summary).set_index("strategy")
     summary_frame.to_csv(args.output_dir / "portfolio_metrics.csv")
@@ -170,6 +202,20 @@ def main():
         linewidth=2.2,
         linestyle="--",
     )
+    ax.plot(
+        equal_weight.index,
+        equal_weight,
+        label="Crypto basket buy and hold",
+        linewidth=2.0,
+        linestyle=":",
+    )
+    pd.DataFrame(
+        {
+            **growth,
+            "BTC buy and hold": benchmark,
+            "Crypto basket buy and hold": equal_weight,
+        }
+    ).to_csv(args.output_dir / "portfolio_growth.csv")
     ax.set(
         title="Qlib portfolio strategy baselines", xlabel="Date", ylabel="Growth of $1"
     )
