@@ -127,6 +127,81 @@ sample, the simple rolling LightGBM model is a useful negative result: it runs
 through Qlib's backtest stack without look-ahead, but it does not beat either
 BTC buy-and-hold or the equal-weight crypto basket.
 
+### BTC signal ensemble experiment
+
+`run_bitcoin_signal_ensembles.py` answers a different question: whether a
+learned combination of individual BTC signals outperforms the signals on their
+own.  It creates multi-horizon momentum, short-horizon mean-reversion,
+20/50/100/200-day moving-average gaps and crosses, MACD, Bollinger-band
+position, RSI (7/14/28-day), stochastic position, a 20-day breakout, volume
+ratio, OBV trend, volatility-adjusted trend strength, and intraday return. It
+also tests transparent trend-consensus signals, including
+`confirm_ma50_mom20`, which holds BTC only when both the 50-day moving-average
+gap and 20-day momentum are positive. Each individual signal is a long/cash
+baseline; `BTC buy and hold` is reported too. The ensembles are:
+
+- `equal_weight_zscore`: an unlearned, equal-weight reference combination;
+- `ridge`: a regularized linear meta-model, whose coefficients are learned on
+  historical signal values and saved after every refit;
+- `lightgbm_meta`: a nonlinear tree-based meta-model using the same signals.
+- `adaptive_best_expert`, `adaptive_top3_vote`, and
+  `adaptive_sharpe_vote`: strategy-aware ensembles.  Their signal experts are
+  re-ranked from trailing *net open-to-open strategy returns*, rather than
+  fitted to raw returns.  They reselect every 30 days and can reselect early
+  when the incumbent has a negative trailing return that is worse than the
+  median expert, which is a loss-of-trend alarm.
+
+All scores are computed after day *t*'s close, traded at day *t+1*'s open, and
+use a five-day open-to-open label.  Before each 90-day prediction block, the
+models retrain on a trailing two-year window whose last five-day label is fully
+known; this prevents training-label look-ahead.  The position is BTC when the
+score is positive and cash otherwise, with the same 0.1% entry and exit fees
+for every candidate.
+
+```bash
+python examples/simple_ma/run_bitcoin_signal_ensembles.py \
+  --provider-uri .data/bitcoin/qlib \
+  --instrument BTCUSD \
+  --start 2019-01-01 --end 2025-12-31 \
+  --data-start 2017-01-01
+```
+
+Results are saved in `examples/simple_ma/ensemble_results/`: `metrics.csv`
+and `returns.png` are the primary comparison, `growth.csv` contains all equity
+curves, `scores.csv` contains every signal and meta-score, and
+`ridge_weights.csv` records the retrained linear coefficients.  Use
+`--retrain-days`, `--train-days 0` (expanding window), `--train-days N`
+(rolling window), `--horizon`, and `--ridge-alpha` to test the return-model
+retraining choices.  The adaptive methods use `--selector-retrain-days`,
+`--selector-eval-days`, `--selector-monitor-days`, and a 14-day
+`--selector-min-retrain-days` cooldown; their refit reason and chosen expert
+are written to `adaptive_retrain_log.csv`.
+
+### Multi-horizon stacked ensemble
+
+`run_bitcoin_multihorizon_ensemble.py` separates the model by forecast horizon
+instead of asking one model to infer every time scale from a five-day label:
+
+- a short model predicts one-day open-to-open returns from short-term timing
+  signals;
+- a medium model predicts five-day returns from swing/trend signals;
+- a long model predicts 20-day returns from 50/100/200-day regime signals;
+- a Ridge stacker learns how to combine their separate validation predictions.
+
+Every 90 days it uses 540 training days, then 60 days for LightGBM early
+stopping, then a separate 60-day stacking-validation period.  The long target
+adds a 21-day purge before the next test block, so no label is incomplete. The
+runner records each model's selected boosting round and the stacker weights.
+Because this needs substantial warm-up history for the 200-day trend feature,
+the default OOS period begins in 2021.
+
+```bash
+python examples/simple_ma/run_bitcoin_multihorizon_ensemble.py \
+  --provider-uri .data/bitcoin/qlib \
+  --instrument BTCUSD --data-start 2017-01-01 \
+  --start 2021-01-01 --end 2025-12-31
+```
+
 ### QQQ portfolio baselines
 
 The same daily portfolio experiment can also run on Yahoo Finance OHLCV data.
